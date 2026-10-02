@@ -1,0 +1,8 @@
+{
+  "groups": {
+    "GROUP_OPENID_FROM_INSPECT": "123456789"
+  },
+  "labels": {
+    "group_123456789": "Example group"
+  }
+}

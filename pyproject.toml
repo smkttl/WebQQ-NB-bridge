@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nonebot-plugin-webqq-bridge"
+version = "0.1.0"
+description = "Expose an official QQ NoneBot bot through WebQQ's OneBot-compatible backend"
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+  "nonebot2>=2.5.0",
+  "nonebot-adapter-qq>=1.7.1",
+  "websockets>=12,<17",
+  "Pillow>=9,<12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+
+[tool.setuptools.packages.find]
+include = ["nonebot_plugin_webqq_bridge*"]
+
+[tool.nonebot]
+plugin = "nonebot_plugin_webqq_bridge"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
