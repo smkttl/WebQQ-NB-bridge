@@ -57,6 +57,10 @@ all C2C conversations, and mirroring of successful text/image responses made by
 other NoneBot plugins. NapCat-only actions return explicit unsupported-action
 errors.
 
+The official QQ adapter strips a self-mention from `get_message()` and sets
+`to_me`. The bridge restores that mention as an `at` segment (also for replies
+to the bot) so downstream consumers can detect `mentionsSelf`.
+
 The current WebQQ client validates private chat IDs as numeric. To use the
 `private_<openid>` form end to end, WebQQ must accept non-numeric private IDs
 and pass the suffix through to the bridge's `send_private_msg` calls.

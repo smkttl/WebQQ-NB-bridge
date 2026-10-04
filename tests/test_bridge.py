@@ -191,6 +191,163 @@ def test_private_send_and_mentions_use_openids(tmp_path: Path) -> None:
     assert captured["message"][0].data["user_id"] == "member-openid"
 
 
+_QQ_BOT_ID = "1904967699"
+_QQ_BOT_NAME = "乌龟bot"
+
+
+def _qq_mention(member_id: str, *, is_you: bool, scope: str = "single"):
+    return SimpleNamespace(
+        id=member_id, is_you=is_you, bot=is_you, scope=scope,
+        member_openid=f"openid-{member_id}", username=f"user-{member_id}",
+    )
+
+
+class _FakeQQBot:
+    class self_info:
+        id = _QQ_BOT_ID
+        username = _QQ_BOT_NAME
+
+
+def _qq_group_event(cls, content: str, mentions):
+    from nonebot.adapters.qq.event import GroupMessageCreateEvent
+    from nonebot.adapters.qq.bot import _check_at_me
+
+    payload = {
+        "id": "qq-message-1",
+        "content": content,
+        "timestamp": "1",
+        "author": {"id": "author", "bot": False, "member_openid": "member-openid", "username": "Alice"},
+        "group_id": "group-1",
+        "group_openid": "group-openid",
+    }
+    if cls is GroupMessageCreateEvent:
+        payload["group_id"] = "group-1"
+    event = cls(**payload)
+    event.mentions = mentions
+    _check_at_me(_FakeQQBot(), event)
+    return event
+
+
+def _at_segments(payload: dict) -> list:
+    return [seg for seg in payload["message"] if seg.get("type") == "at"]
+
+
+def test_self_mention_stripped_by_adapter_is_reconstructed(tmp_path: Path) -> None:
+    from nonebot.adapters.qq.event import GroupMessageCreateEvent
+
+    bridge = make_bridge(tmp_path)
+    bridge.config.bot_id = _QQ_BOT_ID
+    event = _qq_group_event(
+        GroupMessageCreateEvent,
+        f"<@!{_QQ_BOT_ID}> hello there",
+        [_qq_mention(_QQ_BOT_ID, is_you=True)],
+    )
+    payload = bridge.normalize_event(_FakeQQBot(), event)
+
+    ats = _at_segments(payload)
+    assert len(ats) == 1
+    assert ats[0]["data"]["qq"] == _QQ_BOT_ID
+    assert any(seg["type"] == "text" and "hello there" in seg["data"]["text"] for seg in payload["message"])
+
+
+def test_at_message_event_does_not_duplicate_self_mention(tmp_path: Path) -> None:
+    from nonebot.adapters.qq.event import GroupAtMessageCreateEvent
+
+    bridge = make_bridge(tmp_path)
+    bridge.config.bot_id = _QQ_BOT_ID
+    event = _qq_group_event(
+        GroupAtMessageCreateEvent,
+        f"<@!{_QQ_BOT_ID}> hi",
+        [_qq_mention(_QQ_BOT_ID, is_you=True)],
+    )
+    payload = bridge.normalize_event(_FakeQQBot(), event)
+
+    ats = _at_segments(payload)
+    assert len(ats) == 1
+    assert ats[0]["data"]["qq"] == _QQ_BOT_ID
+
+
+def test_other_user_mention_is_preserved_without_self_mention(tmp_path: Path) -> None:
+    from nonebot.adapters.qq.event import GroupMessageCreateEvent
+
+    bridge = make_bridge(tmp_path)
+    bridge.config.bot_id = _QQ_BOT_ID
+    event = _qq_group_event(
+        GroupMessageCreateEvent,
+        "<@!999> hi",
+        [_qq_mention("999", is_you=False)],
+    )
+    payload = bridge.normalize_event(_FakeQQBot(), event)
+
+    ats = _at_segments(payload)
+    assert [seg["data"]["qq"] for seg in ats] == ["999"]
+
+
+def test_reply_to_bot_without_self_at_yields_self_mention(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    bridge.config.bot_id = _QQ_BOT_ID
+    event = FakeGroupEvent()
+    event.to_me = True
+    payload = bridge.normalize_event(SimpleNamespace(self_id=_QQ_BOT_ID), event)
+
+    ats = _at_segments(payload)
+    assert len(ats) == 1
+    assert ats[0]["data"]["qq"] == _QQ_BOT_ID
+
+
+def test_plain_group_and_c2c_messages_are_unchanged(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    bridge.config.bot_id = _QQ_BOT_ID
+    group_payload = bridge.normalize_event(SimpleNamespace(self_id=_QQ_BOT_ID), FakeGroupEvent())
+    assert _at_segments(group_payload) == []
+
+    c2c_payload = bridge.normalize_event(SimpleNamespace(self_id=_QQ_BOT_ID), FakeC2CEvent())
+    assert _at_segments(c2c_payload) == []
+    assert c2c_payload["user_id"] == "user-openid"
+
+
+def test_all_mention_does_not_become_self_mention(tmp_path: Path) -> None:
+    from nonebot.adapters.qq.event import GroupMessageCreateEvent
+
+    bridge = make_bridge(tmp_path)
+    bridge.config.bot_id = _QQ_BOT_ID
+    event = _qq_group_event(
+        GroupMessageCreateEvent,
+        "<@!all> hi",
+        [SimpleNamespace(id="all", is_you=True, bot=False, scope="all", member_openid="", username="全体成员")],
+    )
+    # No single self-mention and no reply: nothing should be reconstructed.
+    event.to_me = False
+    payload = bridge.normalize_event(_FakeQQBot(), event)
+    assert _at_segments(payload) == []
+
+
+def test_self_mention_falls_back_to_connected_bot_info(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    bridge.config.bot_id = ""
+    event = FakeGroupEvent()
+    event.to_me = True
+    payload = bridge.normalize_event(_FakeQQBot(), event)
+
+    ats = _at_segments(payload)
+    assert len(ats) == 1
+    assert ats[0]["data"]["qq"] == _QQ_BOT_ID
+
+
+def test_disconnected_bot_without_configured_id_is_safe(tmp_path: Path) -> None:
+    class DisconnectedBot:
+        @property
+        def self_info(self):
+            raise RuntimeError("not connected")
+
+    bridge = make_bridge(tmp_path)
+    bridge.config.bot_id = ""
+    event = FakeGroupEvent()
+    event.to_me = True
+    payload = bridge.normalize_event(DisconnectedBot(), event)
+    assert _at_segments(payload) == []
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))

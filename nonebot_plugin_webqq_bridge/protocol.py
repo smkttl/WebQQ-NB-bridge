@@ -57,6 +57,24 @@ def _segment_value(segment: Any) -> tuple[str, dict[str, Any]]:
     return str(segment.get("type", "")), segment["data"]
 
 
+def _event_self_mentions(event: Any) -> bool:
+    """True when the raw event's mention list contains a single self-mention."""
+    for mention in getattr(event, "mentions", None) or []:
+        if getattr(mention, "scope", None) != "single":
+            continue
+        if getattr(mention, "is_you", False):
+            return True
+    return False
+
+
+def _has_at_segment(message: list[dict[str, Any]], bot_id: str) -> bool:
+    return any(
+        segment.get("type") == "at" and str(segment.get("data", {}).get("qq", "")) == bot_id
+        for segment in message
+        if isinstance(segment, dict)
+    )
+
+
 class OneBotBridge:
     def __init__(self, config: BridgeConfig, mapping: MappingConfig, storage: BridgeStorage):
         self.config = config
@@ -253,6 +271,20 @@ class OneBotBridge:
                     message.append({"type": "text", "data": {"text": str(part)}})
         except Exception:
             message = [{"type": "text", "data": {"text": event.get_plaintext()}}]
+        # The QQ adapter strips a self-`at` from `event.get_message()` (setting
+        # `to_me`), and a reply to the bot also sets `to_me`. Reconstruct an
+        # explicit self-mention so downstream `mentionsSelf` detection works;
+        # guard against duplicating a self-`at` the adapter already kept.
+        if kind == "group":
+            bot_id = str(self.config.bot_id or "")
+            if not bot_id:
+                try:
+                    bot_id = str(getattr(bot.self_info, "id", "") or "")
+                except Exception:
+                    bot_id = ""
+            if bot_id and not _has_at_segment(message, bot_id):
+                if getattr(event, "to_me", False) or _event_self_mentions(event):
+                    message.insert(0, {"type": "at", "data": {"qq": bot_id}})
         now = int(time.time())
         self.storage.remember_message(synthetic, official_id, self.config.bot_id, kind, conversation_openid,
                                       event_id=str(getattr(event, "event_id", "") or ""), timestamp=now)
