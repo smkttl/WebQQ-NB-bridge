@@ -61,6 +61,10 @@ The official QQ adapter strips a self-mention from `get_message()` and sets
 `to_me`. The bridge restores that mention as an `at` segment (also for replies
 to the bot) so downstream consumers can detect `mentionsSelf`.
 
+Attachments users send in QQ are normalized into WebQQ `image`, `record`,
+`video`, and `file` segments carrying their download URL, so downstream file
+handling can fetch them.
+
 The current WebQQ client validates private chat IDs as numeric. To use the
 `private_<openid>` form end to end, WebQQ must accept non-numeric private IDs
 and pass the suffix through to the bridge's `send_private_msg` calls.

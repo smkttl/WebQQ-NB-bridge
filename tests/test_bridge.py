@@ -348,6 +348,109 @@ def test_disconnected_bot_without_configured_id_is_safe(tmp_path: Path) -> None:
     assert _at_segments(payload) == []
 
 
+def _attachment_group_event(attachments):
+    from nonebot.adapters.qq.event import GroupMessageCreateEvent
+
+    return GroupMessageCreateEvent(**{
+        "id": "qq-attachment-message",
+        "content": "here",
+        "timestamp": "1",
+        "author": {"id": "author", "bot": False, "member_openid": "member-openid", "username": "Alice"},
+        "group_id": "group-1",
+        "group_openid": "group-openid",
+        "attachments": attachments,
+    })
+
+
+def _segments_of(payload, segment_type: str) -> list:
+    return [seg for seg in payload["message"] if seg.get("type") == segment_type]
+
+
+def test_incoming_file_attachment_becomes_file_segment(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    event = _attachment_group_event([
+        {"content_type": "application/pdf", "url": "https://multimedia.nt.qq.com.cn/f.pdf",
+         "filename": "f.pdf", "size": 20},
+    ])
+    payload = bridge.normalize_event(SimpleNamespace(self_id="bot"), event)
+
+    files = _segments_of(payload, "file")
+    assert len(files) == 1
+    assert files[0]["data"]["url"] == "https://multimedia.nt.qq.com.cn/f.pdf"
+    assert files[0]["data"]["file"] == "https://multimedia.nt.qq.com.cn/f.pdf"
+    # Not degraded to a text placeholder.
+    assert not any(
+        seg["type"] == "text" and "file" in seg["data"]["text"] for seg in payload["message"]
+    )
+
+
+def test_incoming_audio_and_video_map_to_record_and_video(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    event = _attachment_group_event([
+        {"content_type": "audio/silk", "url": "https://multimedia.nt.qq.com.cn/v.silk"},
+        {"content_type": "video/mp4", "url": "https://multimedia.nt.qq.com.cn/v.mp4"},
+    ])
+    payload = bridge.normalize_event(SimpleNamespace(self_id="bot"), event)
+
+    assert [seg["data"]["url"] for seg in _segments_of(payload, "record")] == [
+        "https://multimedia.nt.qq.com.cn/v.silk"
+    ]
+    assert [seg["data"]["url"] for seg in _segments_of(payload, "video")] == [
+        "https://multimedia.nt.qq.com.cn/v.mp4"
+    ]
+
+
+def test_incoming_image_attachment_stays_image(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    event = _attachment_group_event([
+        {"content_type": "image/png", "url": "https://gchat.qpic.cn/a.png", "filename": "a.png"},
+    ])
+    payload = bridge.normalize_event(SimpleNamespace(self_id="bot"), event)
+
+    assert [seg["data"]["url"] for seg in _segments_of(payload, "image")] == ["https://gchat.qpic.cn/a.png"]
+
+
+def test_attachment_without_url_is_skipped(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    event = _attachment_group_event([
+        {"content_type": "application/pdf", "url": None},
+        {"content_type": "image/png", "url": ""},
+    ])
+    payload = bridge.normalize_event(SimpleNamespace(self_id="bot"), event)
+
+    assert _segments_of(payload, "file") == []
+    assert _segments_of(payload, "image") == []
+
+
+def test_attachment_helper_skips_missing_url(tmp_path: Path) -> None:
+    from nonebot_plugin_webqq_bridge.protocol import _attachment_segment
+
+    assert _attachment_segment(SimpleNamespace(type="file", data={"url": ""})) is None
+    assert _attachment_segment(
+        SimpleNamespace(type="file", data={"url": "https://multimedia.nt.qq.com.cn/f.pdf"})
+    ) == {
+        "type": "file",
+        "data": {"url": "https://multimedia.nt.qq.com.cn/f.pdf",
+                 "file": "https://multimedia.nt.qq.com.cn/f.pdf"},
+    }
+
+
+def test_unknown_segment_still_falls_back_to_text(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    event = FakeGroupEvent()
+
+    class WeirdSegment:
+        type = "json"
+        data = {"data": "{}"}
+
+        def __str__(self):
+            return "[json card]"
+
+    event.get_message = lambda: [WeirdSegment()]
+    payload = bridge.normalize_event(SimpleNamespace(self_id="bot"), event)
+    assert payload["message"] == [{"type": "text", "data": {"text": "[json card]"}}]
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))

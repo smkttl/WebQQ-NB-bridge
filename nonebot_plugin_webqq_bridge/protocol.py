@@ -75,6 +75,20 @@ def _has_at_segment(message: list[dict[str, Any]], bot_id: str) -> bool:
     )
 
 
+_ATTACHMENT_SEGMENT_TYPES = {"audio": "record", "video": "video", "file": "file"}
+
+
+def _attachment_segment(part: Any) -> dict[str, Any] | None:
+    """Map an adapter attachment segment to a WebQQ segment, or None if it has no URL."""
+    url = str(part.data.get("url", "") or "").strip()
+    if not url:
+        return None
+    segment_type = _ATTACHMENT_SEGMENT_TYPES.get(str(part.type))
+    if segment_type is None:
+        return None
+    return {"type": segment_type, "data": {"url": url, "file": url}}
+
+
 class OneBotBridge:
     def __init__(self, config: BridgeConfig, mapping: MappingConfig, storage: BridgeStorage):
         self.config = config
@@ -267,6 +281,10 @@ class OneBotBridge:
                 elif part.type == "mention_user":
                     mentioned = str(part.data.get("user_id", ""))
                     message.append({"type": "at", "data": {"qq": mentioned, "name": part.data.get("username", "")}})
+                elif part.type in _ATTACHMENT_SEGMENT_TYPES:
+                    attachment = _attachment_segment(part)
+                    if attachment is not None:
+                        message.append(attachment)
                 else:
                     message.append({"type": "text", "data": {"text": str(part)}})
         except Exception:
