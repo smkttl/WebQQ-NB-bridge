@@ -77,7 +77,8 @@ def test_outgoing_group_send_uses_reverse_mapping(tmp_path: Path) -> None:
     class FakeBot:
         async def send_to_group(self, openid, message, **kwargs):
             assert openid == "group-openid"
-            assert message.extract_plain_text() == "hello"
+            assert [seg.type for seg in message] == ["markdown"]
+            assert message["markdown"][0].data["markdown"].content == "hello"
             assert kwargs["msg_seq"] == 1
             return Result()
 
@@ -189,6 +190,111 @@ def test_private_send_and_mentions_use_openids(tmp_path: Path) -> None:
     assert captured["group_openid"] == "group-openid"
     assert captured["message"][0].type == "mention_user"
     assert captured["message"][0].data["user_id"] == "member-openid"
+
+
+def _capture_group_send(bridge, message):
+    captured = {}
+
+    class Result:
+        id = "official-markdown-outgoing"
+
+    class FakeBot:
+        async def send_to_group(self, openid, outgoing, **kwargs):
+            captured["openid"] = openid
+            captured["message"] = outgoing
+            captured["kwargs"] = kwargs
+            return Result()
+
+    bridge.bot = FakeBot()
+    response = asyncio.run(bridge.handle_request({
+        "action": "send_group_msg",
+        "params": {"group_id": 123, "message": message},
+    }))
+    assert response["status"] == "ok"
+    return captured
+
+
+def test_plain_text_is_sent_as_markdown(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    captured = _capture_group_send(bridge, "**bold** and `code`")
+
+    outgoing = captured["message"]
+    assert [seg.type for seg in outgoing] == ["markdown"]
+    markdown = outgoing["markdown"][0].data["markdown"]
+    assert markdown.content == "**bold** and `code`"
+    assert markdown.template_id is None
+    assert markdown.custom_template_id is None
+
+
+def test_text_parts_are_joined_into_one_markdown_segment(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    captured = _capture_group_send(bridge, [
+        {"type": "text", "data": {"text": "first "}},
+        {"type": "text", "data": {"text": "second"}},
+    ])
+
+    outgoing = captured["message"]
+    assert [seg.type for seg in outgoing] == ["markdown"]
+    assert outgoing["markdown"][0].data["markdown"].content == "first second"
+
+
+def test_markdown_and_mention_coexist_as_parallel_segments(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    captured = _capture_group_send(bridge, [
+        {"type": "text", "data": {"text": "hi "}},
+        {"type": "at", "data": {"qq": "member-openid"}},
+    ])
+
+    outgoing = captured["message"]
+    assert [seg.type for seg in outgoing] == ["markdown", "mention_user"]
+    assert outgoing["markdown"][0].data["markdown"].content == "hi "
+    assert outgoing["mention_user"][0].data["user_id"] == "member-openid"
+
+
+def test_text_with_image_stays_plain_text(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    image_path = tmp_path / "pic.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    bridge.config.allowed_file_roots = [tmp_path]
+
+    captured = _capture_group_send(bridge, [
+        {"type": "text", "data": {"text": "look"}},
+        {"type": "image", "data": {"file": image_path.as_uri()}},
+    ])
+
+    outgoing = captured["message"]
+    assert [seg.type for seg in outgoing] == ["text", "file_image"]
+    assert outgoing["text"][0].data["text"] == "look"
+    assert outgoing["markdown"] == []
+
+
+def test_image_only_message_is_unchanged(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+    image_path = tmp_path / "pic.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    bridge.config.allowed_file_roots = [tmp_path]
+
+    captured = _capture_group_send(bridge, [
+        {"type": "image", "data": {"file": image_path.as_uri()}},
+    ])
+
+    assert [seg.type for seg in captured["message"]] == ["file_image"]
+
+
+def test_unsupported_outgoing_segment_still_fails(tmp_path: Path) -> None:
+    bridge = make_bridge(tmp_path)
+
+    class FakeBot:
+        async def send_to_group(self, openid, outgoing, **kwargs):
+            raise AssertionError("should not send")
+
+    bridge.bot = FakeBot()
+    response = asyncio.run(bridge.handle_request({
+        "action": "send_group_msg",
+        "params": {"group_id": 123, "message": [{"type": "video", "data": {}}]},
+    }))
+    assert response["status"] == "failed"
+    assert "unsupported outgoing segment" in response["message"]
 
 
 _QQ_BOT_ID = "1904967699"

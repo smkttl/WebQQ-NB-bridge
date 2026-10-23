@@ -65,6 +65,10 @@ Attachments users send in QQ are normalized into WebQQ `image`, `record`,
 `video`, and `file` segments carrying their download URL, so downstream file
 handling can fetch them.
 
+Outgoing text is sent as native QQ markdown (`markdown.content`), with mentions
+carried as parallel `at` segments. Messages that include an image stay plain
+text, because the adapter does not upload media alongside markdown.
+
 The current WebQQ client validates private chat IDs as numeric. To use the
 `private_<openid>` form end to end, WebQQ must accept non-numeric private IDs
 and pass the suffix through to the bridge's `send_private_msg` calls.

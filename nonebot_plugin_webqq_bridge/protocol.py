@@ -199,10 +199,23 @@ class OneBotBridge:
         from nonebot.adapters.qq import Message, MessageSegment
         outgoing = Message()
         reply_id = None
-        for segment in segments:
-            segment_type, data = _segment_value(segment)
+        values = [_segment_value(segment) for segment in segments]
+        has_image = any(segment_type == "image" for segment_type, _ in values)
+        markdown_text = "".join(
+            str(data.get("text", "")) for segment_type, data in values if segment_type == "text"
+        )
+        # The adapter skips media upload when markdown is present, so text with
+        # an image stays plain text instead of silently dropping the image.
+        markdown_mode = bool(markdown_text) and not has_image
+        markdown_added = False
+        for segment_type, data in values:
             if segment_type == "text":
-                outgoing += MessageSegment.text(str(data.get("text", "")))
+                if markdown_mode:
+                    if not markdown_added:
+                        outgoing += MessageSegment.markdown(markdown_text)
+                        markdown_added = True
+                else:
+                    outgoing += MessageSegment.text(str(data.get("text", "")))
             elif segment_type == "at":
                 openid_member = str(data.get("qq", "")).strip()
                 if not openid_member:
